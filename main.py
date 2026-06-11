@@ -1,11 +1,13 @@
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from config import DB_DESTINO_CONFIG, DB_ORIGEN_CONFIG
+from comparator.data_integrity_checker import DataIntegrityChecker
 from comparator.schema_comparator import SchemaComparator
 from db.connection import DatabaseConnection
 from db.metadata import MetadataReader
+from generator.pdf_report import SimplePDFReport
 from generator.sql_generator import SQLGenerator
 
 
@@ -90,6 +92,21 @@ def comparar_metadata(origen: DatabaseConnection, destino: DatabaseConnection) -
         destino.close()
 
 
+def revisar_integridad_datos(
+    origen: DatabaseConnection,
+    destino: DatabaseConnection,
+) -> List[Dict[str, Any]]:
+    """Revisa datos en DESTINO contra reglas de integridad esperadas por ORIGEN."""
+    try:
+        source_metadata = MetadataReader(origen).read()
+        target_metadata = MetadataReader(destino).read()
+        checker = DataIntegrityChecker(destino, source_metadata, target_metadata)
+        return checker.check()
+    finally:
+        origen.close()
+        destino.close()
+
+
 def escribir_reporte_metadata(diferencias: List[Dict[str, Any]]) -> Path:
     """Genera un reporte TXT con las diferencias encontradas."""
     output_path = Path("output/reporte_metadata.txt")
@@ -149,6 +166,118 @@ def escribir_reporte_metadata(diferencias: List[Dict[str, Any]]) -> Path:
     return output_path
 
 
+def _lineas_reporte_integridad(hallazgos: List[Dict[str, Any]]) -> List[str]:
+    lineas = [
+        "REPORTE DE INTEGRIDAD DE DATOS",
+        f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "Objetivo: detectar datos en BD DESTINO que rompen o debilitan reglas esperadas por BD ORIGEN.",
+        "",
+        f"Total de hallazgos: {len(hallazgos)}",
+        "",
+    ]
+
+    if not hallazgos:
+        lineas.append("No se encontraron problemas de integridad de datos.")
+    else:
+        resumen_impacto: Dict[str, int] = {}
+        resumen_tipo: Dict[str, int] = {}
+        for hallazgo in hallazgos:
+            resumen_impacto[hallazgo["impact"]] = resumen_impacto.get(hallazgo["impact"], 0) + 1
+            resumen_tipo[hallazgo["type"]] = resumen_tipo.get(hallazgo["type"], 0) + 1
+
+        lineas.append("Resumen por impacto:")
+        for impacto in _impact_order():
+            lineas.append(f"  {impacto}: {resumen_impacto.get(impacto, 0)}")
+        lineas.append("")
+        lineas.append("Resumen por tipo:")
+        for tipo, total in sorted(resumen_tipo.items()):
+            lineas.append(f"  {tipo}: {total}")
+        lineas.append("")
+        lineas.append("Detalle:")
+        lineas.append("")
+
+        index = 1
+        for impacto in _impact_order():
+            hallazgos_por_impacto = [
+                hallazgo for hallazgo in hallazgos if hallazgo["impact"] == impacto
+            ]
+            if not hallazgos_por_impacto:
+                continue
+
+            lineas.append(f"IMPACTO {impacto}")
+            lineas.append("")
+            for hallazgo in hallazgos_por_impacto:
+                lineas.extend(
+                    [
+                        f"{index}. {hallazgo['type']}",
+                        f"   {hallazgo['description']}",
+                        f"   Filas afectadas: {hallazgo['count']}",
+                        f"   Motivo: {hallazgo['impact_reason']}",
+                        "   Consulta de revision:",
+                        f"   {hallazgo['review_sql']}",
+                    ]
+                )
+                if hallazgo.get("fix_sql"):
+                    lineas.extend(
+                        [
+                            "   SQL de fix propuesto:",
+                            f"   {hallazgo['fix_sql']}",
+                        ]
+                    )
+                lineas.append("")
+                index += 1
+
+    return lineas
+
+
+def escribir_reporte_integridad(hallazgos: List[Dict[str, Any]]) -> Tuple[Path, Path]:
+    """Genera reportes TXT y PDF con problemas de integridad de datos en DESTINO."""
+    txt_path = Path("output/reporte_integridad_datos.txt")
+    pdf_path = Path("output/reporte_integridad_datos.pdf")
+    txt_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lineas = _lineas_reporte_integridad(hallazgos)
+    txt_path.write_text("\n".join(lineas), encoding="utf-8")
+    SimplePDFReport(str(pdf_path)).write(lineas)
+    return txt_path, pdf_path
+
+
+def escribir_sql_fix_huerfanos(hallazgos: List[Dict[str, Any]]) -> Path:
+    """Genera SQL de apoyo para corregir filas huerfanas detectadas."""
+    output_path = Path("output/fix_huerfanos.sql")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    huerfanos = [
+        hallazgo
+        for hallazgo in hallazgos
+        if hallazgo["type"] == "FK_ORPHAN_ROWS"
+    ]
+
+    lineas = [
+        "-- SQL de fix propuesto para filas huerfanas.",
+        "-- Revisa y prueba antes de ejecutar en un ambiente real.",
+        "-- Los UPDATE automaticos solo se generan cuando la FK permite NULL.",
+        "",
+    ]
+
+    if not huerfanos:
+        lineas.append("-- No se encontraron filas huerfanas con fix generado.")
+    else:
+        for index, hallazgo in enumerate(huerfanos, start=1):
+            lineas.extend(
+                [
+                    f"-- {index}. {hallazgo['type']}",
+                    f"-- Impacto: {hallazgo['impact']}",
+                    f"-- Filas afectadas: {hallazgo['count']}",
+                    f"-- {hallazgo['description']}",
+                    hallazgo.get("fix_sql") or "-- Sin fix automatico.",
+                    "",
+                ]
+            )
+
+    output_path.write_text("\n".join(lineas), encoding="utf-8")
+    return output_path
+
+
 def _impact_order() -> List[str]:
     return ["CRITICA", "ALTO", "MEDIO", "BAJO"]
 
@@ -201,11 +330,23 @@ def main() -> None:
     scripts_path = escribir_scripts(diferencias)
     scripts_impacto_paths = escribir_scripts_por_impacto(diferencias)
 
+    print("Revisando integridad de datos en BD DESTINO...")
+    hallazgos_integridad = revisar_integridad_datos(
+        DatabaseConnection(DB_ORIGEN_CONFIG),
+        DatabaseConnection(DB_DESTINO_CONFIG),
+    )
+    integridad_txt_path, integridad_pdf_path = escribir_reporte_integridad(hallazgos_integridad)
+    fix_huerfanos_path = escribir_sql_fix_huerfanos(hallazgos_integridad)
+
     print(f"Reporte de metadata generado: {metadata_path}")
+    print(f"Reporte de integridad de datos TXT generado: {integridad_txt_path}")
+    print(f"Reporte de integridad de datos PDF generado: {integridad_pdf_path}")
+    print(f"SQL de fix para huerfanos generado: {fix_huerfanos_path}")
     print(f"Archivo SQL generado: {scripts_path}")
     for path in scripts_impacto_paths:
         print(f"Archivo SQL por impacto generado: {path}")
     print(f"Diferencias encontradas: {len(diferencias)}")
+    print(f"Hallazgos de integridad encontrados: {len(hallazgos_integridad)}")
     print("Proceso terminado.")
 
 

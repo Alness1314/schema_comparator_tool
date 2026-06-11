@@ -92,10 +92,32 @@ class MetadataReader:
                 con.conname AS constraint_name,
                 cls.relname AS table_name,
                 con.contype AS constraint_type,
-                pg_get_constraintdef(con.oid, true) AS definition
+                pg_get_constraintdef(con.oid, true) AS definition,
+                COALESCE(
+                    (
+                        SELECT array_agg(att.attname ORDER BY keys.ordinality)
+                        FROM unnest(con.conkey) WITH ORDINALITY AS keys(attnum, ordinality)
+                        JOIN pg_attribute att
+                          ON att.attrelid = con.conrelid
+                         AND att.attnum = keys.attnum
+                    ),
+                    ARRAY[]::text[]
+                ) AS columns,
+                ref_cls.relname AS referenced_table,
+                COALESCE(
+                    (
+                        SELECT array_agg(att.attname ORDER BY keys.ordinality)
+                        FROM unnest(con.confkey) WITH ORDINALITY AS keys(attnum, ordinality)
+                        JOIN pg_attribute att
+                          ON att.attrelid = con.confrelid
+                         AND att.attnum = keys.attnum
+                    ),
+                    ARRAY[]::text[]
+                ) AS referenced_columns
             FROM pg_constraint con
             JOIN pg_class cls ON cls.oid = con.conrelid
             JOIN pg_namespace nsp ON nsp.oid = cls.relnamespace
+            LEFT JOIN pg_class ref_cls ON ref_cls.oid = con.confrelid
             WHERE nsp.nspname = %s
             ORDER BY cls.relname, con.conname;
             """,

@@ -7,8 +7,9 @@ El flujo principal del proyecto:
 1. Valida conexión a BD ORIGEN y BD DESTINO.
 2. Lee metadata estructural.
 3. Compara diferencias.
-4. Genera reportes TXT.
-5. Genera scripts SQL generales y por nivel de impacto.
+4. Revisa integridad de datos en BD DESTINO contra reglas esperadas por BD ORIGEN.
+5. Genera reportes TXT.
+6. Genera scripts SQL generales y por nivel de impacto.
 
 ## Características
 
@@ -22,6 +23,12 @@ El flujo principal del proyecto:
 	- Constraints
 	- Índices
 	- Vistas
+- Revisión de integridad de datos en DESTINO:
+	- Valores NULL en columnas obligatorias.
+	- Relaciones FK con columnas en NULL.
+	- Filas huérfanas que no tienen registro padre.
+	- Duplicados que romperían PRIMARY KEY o UNIQUE.
+	- Textos obligatorios vacíos.
 - Clasificación de impacto por diferencia:
 	- CRITICA
 	- ALTO
@@ -136,6 +143,12 @@ Se generan en la carpeta output:
 	- Estado de conectividad por cada BD.
 - reporte_metadata.txt
 	- Resumen y detalle de diferencias detectadas.
+- reporte_integridad_datos.txt
+	- Resumen de problemas de datos que afectan integridad y consultas SQL de revisión.
+- reporte_integridad_datos.pdf
+	- Mismo reporte de integridad en formato PDF.
+- fix_huerfanos.sql
+	- SQL de apoyo para corregir filas huérfanas detectadas; solo genera UPDATE automático cuando la FK permite NULL.
 - scripts.sql
 	- Script SQL consolidado.
 - scripts_critica.sql
@@ -157,6 +170,14 @@ Ejemplos de type en resultados:
 - INDEX_MISSING_OR_DIFFERENT
 - VIEW_MISSING_OR_DIFFERENT
 
+Ejemplos de type en hallazgos de integridad:
+
+- REQUIRED_NULL_VALUES
+- FK_NULL_RELATION
+- FK_ORPHAN_ROWS
+- DUPLICATE_KEY_VALUES
+- REQUIRED_EMPTY_TEXT
+
 Cada diferencia incluye:
 
 - type
@@ -164,6 +185,15 @@ Cada diferencia incluye:
 - impact_reason
 - description
 - sql
+
+Cada hallazgo de integridad incluye:
+
+- type
+- impact
+- impact_reason
+- description
+- count
+- review_sql
 
 ## Estructura del proyecto
 
