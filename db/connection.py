@@ -62,9 +62,17 @@ class DatabaseConnection:
 
     def close(self) -> None:
         """Cierra la conexion si esta abierta."""
-        if self.connection is not None:
-            self.connection.close()
-            self.connection = None
+        connection = self.connection
+        self.connection = None
+        if connection is not None:
+            connection.close()
+
+    def __enter__(self) -> "DatabaseConnection":
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        self.close()
 
     def _connect_postgresql(self) -> Any:
         import psycopg2

@@ -135,6 +135,30 @@ Desde la raíz del proyecto:
 python main.py
 ```
 
+### Dashboard grafico
+
+Tambien puedes abrir una interfaz grafica con Tkinter:
+
+```powershell
+python gui.py
+```
+
+El dashboard permite:
+
+- Validar la conexion de BD ORIGEN y BD DESTINO.
+- Comparar si la estructura de ambas bases es igual.
+- Revisar inconsistencias de integridad de datos en BD DESTINO.
+- Ejecutar el flujo completo desde un solo boton.
+- Ver el avance del proceso en un cuadro de texto.
+- Cambiar entre modo claro y modo oscuro.
+- Ver una barra de progreso mientras se ejecuta cada proceso.
+- Descargar de forma independiente el PDF de conexiones, estructura o integridad.
+- Descargar los scripts SQL generados.
+- Vaciar los datos de una tabla en BD ORIGEN o BD DESTINO desde un dialogo seguro.
+- Analizar previamente todas las tablas dependientes por claves foraneas.
+- Confirmar el borrado despues de revisar las filas y el orden de ejecucion.
+- Generar un reporte final TXT y PDF con las filas borradas.
+
 ## Archivos de salida
 
 Se generan en la carpeta output:
@@ -147,6 +171,9 @@ Se generan en la carpeta output:
 	- Resumen de problemas de datos que afectan integridad y consultas SQL de revisión.
 - reporte_integridad_datos.pdf
 	- Mismo reporte de integridad en formato PDF.
+- reporte_borrado_datos.txt
+- reporte_borrado_datos.pdf
+	- Resultado del ultimo vaciado de tabla ejecutado desde el dashboard.
 - fix_huerfanos.sql
 	- SQL de apoyo para corregir filas huérfanas detectadas; solo genera UPDATE automático cuando la FK permite NULL.
 - scripts.sql
@@ -223,6 +250,7 @@ schema_comparator_tool/
 
 - La comparación completa de metadata está implementada actualmente para PostgreSQL.
 - Aunque existen conectores para MySQL y SQL Server en validación de conexión, la lectura detallada de metadata para esos motores aún no está implementada.
+- El vaciado de tablas soporta PostgreSQL, MySQL y SQL Server. Si detecta un ciclo de claves foraneas que impide determinar un orden seguro, no ejecuta ningun borrado.
 
 ## Buenas prácticas recomendadas
 

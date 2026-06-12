@@ -19,22 +19,25 @@ class DataIntegrityChecker:
         self.target_metadata = target_metadata
 
     def check(self) -> List[Dict[str, Any]]:
-        engine = self.target_connection.parsed_url["engine"]
-        if engine != "postgresql":
-            raise NotImplementedError(
-                "La revision de integridad de datos esta implementada por ahora para PostgreSQL."
-            )
+        try:
+            engine = self.target_connection.parsed_url["engine"]
+            if engine != "postgresql":
+                raise NotImplementedError(
+                    "La revision de integridad de datos esta implementada por ahora para PostgreSQL."
+                )
 
-        connection = self.target_connection.connect()
-        findings: List[Dict[str, Any]] = []
+            connection = self.target_connection.connect()
+            findings: List[Dict[str, Any]] = []
 
-        findings.extend(self._check_required_nulls(connection))
-        findings.extend(self._check_fk_nulls(connection))
-        findings.extend(self._check_fk_orphans(connection))
-        findings.extend(self._check_unique_duplicates(connection))
-        findings.extend(self._check_required_empty_strings(connection))
+            findings.extend(self._check_required_nulls(connection))
+            findings.extend(self._check_fk_nulls(connection))
+            findings.extend(self._check_fk_orphans(connection))
+            findings.extend(self._check_unique_duplicates(connection))
+            findings.extend(self._check_required_empty_strings(connection))
 
-        return findings
+            return findings
+        finally:
+            self.target_connection.close()
 
     def _check_required_nulls(self, connection: Any) -> List[Dict[str, Any]]:
         findings = []

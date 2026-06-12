@@ -10,13 +10,16 @@ class MetadataReader:
         self.db_connection = db_connection
 
     def read(self) -> Dict[str, Any]:
-        engine = self.db_connection.parsed_url["engine"]
-        if engine != "postgresql":
-            raise NotImplementedError(
-                "La lectura completa de metadata esta implementada por ahora para PostgreSQL."
-            )
+        try:
+            engine = self.db_connection.parsed_url["engine"]
+            if engine != "postgresql":
+                raise NotImplementedError(
+                    "La lectura completa de metadata esta implementada por ahora para PostgreSQL."
+                )
 
-        return self._read_postgresql()
+            return self._read_postgresql()
+        finally:
+            self.db_connection.close()
 
     def _read_postgresql(self) -> Dict[str, Any]:
         schema = self.db_connection.config.get("schema") or "public"
