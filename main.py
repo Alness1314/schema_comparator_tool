@@ -157,6 +157,12 @@ def escribir_reporte_metadata(diferencias: List[Dict[str, Any]]) -> Path:
                         f"{index}. {diferencia['type']}",
                         f"   {diferencia['description']}",
                         f"   Motivo: {diferencia['impact_reason']}",
+                        "   Definicion ORIGEN:",
+                        f"   {diferencia.get('source_definition', '') or '(no disponible)'}",
+                        "   Definicion DESTINO:",
+                        f"   {diferencia.get('target_definition', '') or '(no existe o no disponible)'}",
+                        "   Script sugerido:",
+                        f"   {diferencia.get('sql', '').strip() or '(sin script automatico)'}",
                         "",
                     ]
                 )

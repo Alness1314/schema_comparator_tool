@@ -20,9 +20,22 @@ El flujo principal del proyecto:
 	- Secuencias
 	- Tablas
 	- Columnas
+	- Columnas identity y generated stored
 	- Constraints
 	- Índices
+	- Funciones
+	- Extensiones
+	- Triggers
 	- Vistas
+	- Vistas materializadas
+- Comparacion profunda PostgreSQL:
+	- Compara definiciones completas de columnas, defaults, nullability, generated expressions, identity, collation y comentarios.
+	- Compara constraints por firma real y no solo por nombre, incluyendo FKs por relacion.
+	- Detecta equivalencia entre UNIQUE constraints e indices unicos equivalentes.
+	- Compara indices por metodo, expresion, columnas, opclass, partial WHERE y unicidad.
+	- Detecta funciones faltantes o diferentes usadas por DDL.
+	- Detecta extensiones necesarias como pg_trgm y fuzzystrmatch.
+	- Genera SQL incremental con advertencias para cambios destructivos como recrear columnas generated.
 - Revisión de integridad de datos en DESTINO:
 	- Valores NULL en columnas obligatorias.
 	- Relaciones FK con columnas en NULL.
@@ -154,10 +167,18 @@ El dashboard permite:
 - Ver una barra de progreso mientras se ejecuta cada proceso.
 - Descargar de forma independiente el PDF de conexiones, estructura o integridad.
 - Descargar los scripts SQL generados.
+- Comparar una tabla especifica en direccion ORIGEN -> DESTINO o DESTINO -> ORIGEN.
+- Ver el schema SQL de la tabla comparada dentro del programa.
+- Generar reporte TXT y PDF con diferencias de estructura y datos de una tabla.
+- Igualar automaticamente el schema de una tabla segun la direccion seleccionada.
+- Igualar automaticamente la data de una tabla en una accion separada.
+- Generar reportes TXT/PDF independientes para igualacion de schema y data.
 - Vaciar los datos de una tabla en BD ORIGEN o BD DESTINO desde un dialogo seguro.
 - Analizar previamente todas las tablas dependientes por claves foraneas.
 - Confirmar el borrado despues de revisar las filas y el orden de ejecucion.
 - Generar un reporte final TXT y PDF con las filas borradas.
+- Eliminar una tabla y sus tablas dependientes desde un dialogo seguro.
+- Generar informe previo y reporte final TXT/PDF para la eliminacion de tablas.
 
 ## Archivos de salida
 
@@ -174,6 +195,18 @@ Se generan en la carpeta output:
 - reporte_borrado_datos.txt
 - reporte_borrado_datos.pdf
 	- Resultado del ultimo vaciado de tabla ejecutado desde el dashboard.
+- reporte_comparacion_tabla.txt
+- reporte_comparacion_tabla.pdf
+	- Comparacion de estructura y datos de una tabla especifica.
+- reporte_igualacion_tabla_schema.txt
+- reporte_igualacion_tabla_schema.pdf
+	- Resultado de la ultima igualacion automatica de schema de tabla.
+- reporte_igualacion_tabla_data.txt
+- reporte_igualacion_tabla_data.pdf
+	- Resultado de la ultima igualacion automatica de data de tabla.
+- reporte_eliminacion_tablas.txt
+- reporte_eliminacion_tablas.pdf
+	- Resultado de la ultima eliminacion de tablas relacionadas ejecutada desde el dashboard.
 - fix_huerfanos.sql
 	- SQL de apoyo para corregir filas huérfanas detectadas; solo genera UPDATE automático cuando la FK permite NULL.
 - scripts.sql

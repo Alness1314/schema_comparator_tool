@@ -2,6 +2,7 @@ import queue
 import shutil
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Dict, List
@@ -13,8 +14,19 @@ except ImportError:
 
 from config import DB_DESTINO_CONFIG, DB_ORIGEN_CONFIG
 from db.connection import DatabaseConnection
+from db.table_dropper import DropTablesPlan, RelatedTablesDropper
 from db.table_data_cleaner import DeletionPlan, TableDataCleaner
+from comparator.table_comparator import TableComparator, TableSynchronizer, TableSyncResult
 from generator.deletion_report import deletion_plan_lines, write_deletion_report
+from generator.table_drop_report import (
+    drop_tables_plan_lines,
+    write_drop_tables_report,
+)
+from generator.table_comparison_report import (
+    table_comparison_lines,
+    write_table_comparison_report,
+)
+from generator.table_sync_report import write_table_sync_report
 from main import (
     comparar_metadata,
     escribir_reporte_conexiones,
@@ -176,6 +188,24 @@ class SchemaComparatorDashboard(tk.Tk):
                 ],
             ),
             (
+                "Comparacion de tabla",
+                "Revisa estructura y datos de una tabla especifica.",
+                [
+                    ("Abrir comparador", self.open_table_comparison_dialog, True),
+                    ("PDF comparar", self.download_table_comparison_pdf, False),
+                    ("PDF schema", self.download_table_schema_sync_pdf, False),
+                    ("PDF data", self.download_table_data_sync_pdf, False),
+                ],
+            ),
+            (
+                "Eliminar tablas",
+                "Elimina una tabla y sus tablas dependientes.",
+                [
+                    ("Abrir herramienta", self.open_drop_tables_dialog, True),
+                    ("Descargar PDF", self.download_drop_tables_pdf, False),
+                ],
+            ),
+            (
                 "Panel de proceso",
                 "Limpia los resultados visibles del contenedor central.",
                 [("Limpiar proceso", self.clear_log, True)],
@@ -289,6 +319,18 @@ class SchemaComparatorDashboard(tk.Tk):
             return
         DataDeletionDialog(self)
 
+    def open_table_comparison_dialog(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo("Proceso en ejecucion", "Espera a que termine el proceso actual.")
+            return
+        TableComparisonDialog(self)
+
+    def open_drop_tables_dialog(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo("Proceso en ejecucion", "Espera a que termine el proceso actual.")
+            return
+        DropTablesDialog(self)
+
     def toggle_theme(self) -> None:
         self.dark_mode = not self.dark_mode
         self.theme_var.set("Modo claro" if self.dark_mode else "Modo oscuro")
@@ -309,6 +351,30 @@ class SchemaComparatorDashboard(tk.Tk):
     def download_deletion_pdf(self) -> None:
         pdf_path = self.generated_files.get("deletion_pdf") or Path("output/reporte_borrado_datos.pdf")
         self._download_file(pdf_path, "Guardar PDF de borrado", [("PDF", "*.pdf")])
+
+    def download_table_comparison_pdf(self) -> None:
+        pdf_path = self.generated_files.get("table_comparison_pdf") or Path(
+            "output/reporte_comparacion_tabla.pdf"
+        )
+        self._download_file(pdf_path, "Guardar PDF de comparacion de tabla", [("PDF", "*.pdf")])
+
+    def download_table_schema_sync_pdf(self) -> None:
+        pdf_path = self.generated_files.get("table_sync_schema_pdf") or Path(
+            "output/reporte_igualacion_tabla_schema.pdf"
+        )
+        self._download_file(pdf_path, "Guardar PDF de igualacion de schema", [("PDF", "*.pdf")])
+
+    def download_table_data_sync_pdf(self) -> None:
+        pdf_path = self.generated_files.get("table_sync_data_pdf") or Path(
+            "output/reporte_igualacion_tabla_data.pdf"
+        )
+        self._download_file(pdf_path, "Guardar PDF de igualacion de data", [("PDF", "*.pdf")])
+
+    def download_drop_tables_pdf(self) -> None:
+        pdf_path = self.generated_files.get("drop_tables_pdf") or Path(
+            "output/reporte_eliminacion_tablas.pdf"
+        )
+        self._download_file(pdf_path, "Guardar PDF de eliminacion de tablas", [("PDF", "*.pdf")])
 
     def download_sql_scripts(self) -> None:
         sql_paths = self._available_sql_paths()
@@ -867,27 +933,44 @@ class SQLViewerDialog(tk.Toplevel):
         self,
         parent: SchemaComparatorDashboard,
         initial_path: Path | None = None,
+        initial_content: str = "",
+        title: str = "Visor SQL",
     ) -> None:
         super().__init__(parent)
         self.parent = parent
-        self.colors = parent.theme_colors
+        self.colors = getattr(parent, "theme_colors", getattr(parent, "colors", {}))
         self.path_var = tk.StringVar(value="Ningun archivo cargado")
 
         self.title("Visor de archivos SQL")
         self.geometry("940x640")
         self.minsize(700, 480)
         self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self.close)
         self.configure(bg=self.colors["bg"])
+        self.grab_set()
 
         header = tk.Frame(self, bg=self.colors["panel"], padx=18, pady=14)
         header.pack(fill="x")
         tk.Label(
             header,
-            text="Visor SQL",
+            text=title,
             bg=self.colors["panel"],
             fg=self.colors["text"],
             font=("Segoe UI", 16, "bold"),
         ).pack(side="left")
+        tk.Button(
+            header,
+            text="Cerrar",
+            command=self.close,
+            bg=self.colors["button"],
+            fg=self.colors["text"],
+            activebackground=self.colors["button_active"],
+            activeforeground=self.colors["text"],
+            relief="flat",
+            padx=14,
+            pady=7,
+            cursor="hand2",
+        ).pack(side="right", padx=(8, 0))
         tk.Button(
             header,
             text="Cargar archivo",
@@ -940,7 +1023,10 @@ class SQLViewerDialog(tk.Toplevel):
             xscrollcommand=horizontal.set,
         )
 
-        if initial_path is not None:
+        if initial_content:
+            self.text.insert("1.0", initial_content)
+            self.path_var.set("Contenido generado por el programa")
+        elif initial_path is not None:
             self._load_path(initial_path)
         else:
             self.text.insert(
@@ -977,6 +1063,398 @@ class SQLViewerDialog(tk.Toplevel):
         self.text.mark_set("insert", "1.0")
         self.text.see("1.0")
         self.path_var.set(str(path.resolve()))
+
+    def close(self) -> None:
+        if self.grab_current() == self:
+            self.grab_release()
+        if self.parent.winfo_exists() and isinstance(self.parent, tk.Toplevel):
+            self.parent.grab_set()
+        self.destroy()
+
+
+class TableComparisonDialog(tk.Toplevel):
+    """Dialogo para comparar una tabla entre ORIGEN y DESTINO."""
+
+    def __init__(self, dashboard: SchemaComparatorDashboard) -> None:
+        super().__init__(dashboard)
+        self.dashboard = dashboard
+        self.colors = dashboard.theme_colors
+        self.title("Comparar tabla")
+        self.geometry("820x620")
+        self.minsize(700, 520)
+        self.transient(dashboard)
+        self.grab_set()
+        self.configure(bg=self.colors["bg"])
+
+        self.result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self.worker: threading.Thread | None = None
+        self.result: Any | None = None
+        self.table_var = tk.StringVar()
+        self.direction_var = tk.StringVar(value="ORIGEN -> DESTINO")
+        self.status_var = tk.StringVar(
+            value="Escribe la tabla que quieres comparar entre ORIGEN y DESTINO."
+        )
+
+        self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.after(100, self._poll_results)
+        self.table_entry.focus_set()
+
+    def _build_ui(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        form = ttk.LabelFrame(
+            self,
+            text="Tabla a comparar",
+            padding=14,
+            style="Dialog.TLabelframe",
+        )
+        form.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        form.columnconfigure(1, weight=1)
+
+        ttk.Label(form, text="Direccion:", style="DialogPanel.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 10)
+        )
+        self.direction_combo = ttk.Combobox(
+            form,
+            textvariable=self.direction_var,
+            values=["ORIGEN -> DESTINO", "DESTINO -> ORIGEN"],
+            state="readonly",
+            style="Dialog.TCombobox",
+        )
+        self.direction_combo.grid(row=0, column=1, sticky="ew")
+
+        ttk.Label(form, text="Nombre de tabla:", style="DialogPanel.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=(10, 0)
+        )
+        self.table_entry = ttk.Entry(
+            form,
+            textvariable=self.table_var,
+            style="Dialog.TEntry",
+        )
+        self.table_entry.grid(row=1, column=1, sticky="ew", pady=(10, 0))
+        self.table_entry.bind("<Return>", lambda _event: self.compare())
+
+        actions = ttk.Frame(self, padding=(16, 4), style="Dialog.TFrame")
+        actions.grid(row=1, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+        actions.columnconfigure(2, weight=1)
+
+        self.compare_button = ttk.Button(
+            actions,
+            text="Comparar tabla",
+            command=self.compare,
+            style="DialogPrimary.TButton",
+        )
+        self.compare_button.grid(row=0, column=0, sticky="ew", padx=4)
+        self.sync_schema_button = ttk.Button(
+            actions,
+            text="Igualar schema",
+            command=self.sync_schema,
+            state="disabled",
+            style="DialogPrimary.TButton",
+        )
+        self.sync_schema_button.grid(row=0, column=1, sticky="ew", padx=4)
+        self.sync_data_button = ttk.Button(
+            actions,
+            text="Igualar data",
+            command=self.sync_data,
+            state="disabled",
+            style="DialogPrimary.TButton",
+        )
+        self.sync_data_button.grid(row=0, column=2, sticky="ew", padx=4)
+        self.view_source_schema_button = ttk.Button(
+            actions,
+            text="Ver schema A",
+            command=self.view_source_schema,
+            state="disabled",
+            style="DialogSecondary.TButton",
+        )
+        self.view_source_schema_button.grid(row=1, column=0, sticky="ew", padx=4, pady=(6, 0))
+        self.view_target_schema_button = ttk.Button(
+            actions,
+            text="Ver schema B",
+            command=self.view_target_schema,
+            state="disabled",
+            style="DialogSecondary.TButton",
+        )
+        self.view_target_schema_button.grid(row=1, column=1, sticky="ew", padx=4, pady=(6, 0))
+        self.close_button = ttk.Button(
+            actions,
+            text="Cerrar",
+            command=self._close,
+            style="DialogSecondary.TButton",
+        )
+        self.close_button.grid(row=1, column=2, sticky="ew", padx=4, pady=(6, 0))
+
+        report_frame = ttk.LabelFrame(
+            self,
+            text="Reporte",
+            padding=10,
+            style="Dialog.TLabelframe",
+        )
+        report_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=8)
+        report_frame.columnconfigure(0, weight=1)
+        report_frame.rowconfigure(0, weight=1)
+
+        self.report_text = tk.Text(
+            report_frame,
+            wrap="word",
+            state="disabled",
+            font=("Consolas", 10),
+            padx=10,
+            pady=10,
+            bg=self.colors["field"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            selectbackground=self.colors["accent"],
+            selectforeground="#ffffff",
+            relief="flat",
+        )
+        self.report_text.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(
+            report_frame,
+            orient="vertical",
+            command=self.report_text.yview,
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.report_text.configure(yscrollcommand=scrollbar.set)
+
+        ttk.Label(
+            self,
+            textvariable=self.status_var,
+            style="Dialog.TLabel",
+        ).grid(row=3, column=0, sticky="w", padx=20, pady=(0, 14))
+
+    def compare(self) -> None:
+        table_name = self.table_var.get().strip()
+        if not table_name:
+            messagebox.showwarning("Falta la tabla", "Escribe el nombre de la tabla.", parent=self)
+            return
+
+        self._set_busy(True, "Comparando estructura y datos de la tabla...")
+        self.worker = threading.Thread(
+            target=self._compare_worker,
+            args=(table_name, self.direction_var.get()),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def sync_schema(self) -> None:
+        if self.result is None:
+            return
+        if not messagebox.askyesno(
+            "Confirmar igualacion de schema",
+            (
+                f"Se aplicaran cambios de schema en {self.result.target_name} "
+                f"para igualarlo con {self.result.source_name}.\n\n"
+                "Deseas ejecutar?"
+            ),
+            icon="warning",
+            parent=self,
+        ):
+            return
+
+        self._set_busy(True, "Igualando schema de la tabla...")
+        self.worker = threading.Thread(
+            target=self._sync_worker,
+            args=("schema", self.table_var.get().strip(), self.direction_var.get()),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def sync_data(self) -> None:
+        if self.result is None:
+            return
+        if not messagebox.askyesno(
+            "Confirmar igualacion de data",
+            (
+                f"Se reemplazara la data de {self.result.target_name} con la data de "
+                f"{self.result.source_name}.\n\n"
+                "Esta operacion borra la data actual del destino y la vuelve a insertar. "
+                "Deseas ejecutar?"
+            ),
+            icon="warning",
+            parent=self,
+        ):
+            return
+
+        self._set_busy(True, "Igualando data de la tabla...")
+        self.worker = threading.Thread(
+            target=self._sync_worker,
+            args=("data", self.table_var.get().strip(), self.direction_var.get()),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def _compare_worker(self, table_name: str, direction: str) -> None:
+        source_name, target_name, source_config, target_config = self._direction_config(direction)
+
+        comparator = TableComparator(
+            DatabaseConnection(source_config),
+            DatabaseConnection(target_config),
+            source_name,
+            target_name,
+        )
+        try:
+            result = comparator.compare(table_name)
+            txt_path, pdf_path = write_table_comparison_report(result)
+            self.result_queue.put(("result", (result, txt_path, pdf_path)))
+        except Exception as error:
+            self.result_queue.put(("error", str(error)))
+
+    def _sync_worker(self, sync_type: str, table_name: str, direction: str) -> None:
+        source_name, target_name, source_config, target_config = self._direction_config(direction)
+        synchronizer = TableSynchronizer(
+            DatabaseConnection(source_config),
+            DatabaseConnection(target_config),
+            source_name,
+            target_name,
+        )
+        try:
+            if sync_type == "schema":
+                result = synchronizer.sync_schema(table_name)
+            else:
+                result = synchronizer.sync_data(table_name)
+            txt_path, pdf_path = write_table_sync_report(result)
+            self.result_queue.put(("sync", (result, txt_path, pdf_path)))
+        except Exception as error:
+            result = TableSyncResult(
+                table_name=table_name,
+                source_name=source_name,
+                target_name=target_name,
+                sync_type=sync_type.upper(),
+                generated_at=datetime.now(),
+                statements_executed=0,
+                rows_copied=0,
+                status="ERROR",
+                detail=str(error),
+            )
+            txt_path, pdf_path = write_table_sync_report(result)
+            self.result_queue.put(("sync_error", (result, txt_path, pdf_path)))
+
+    def _direction_config(self, direction: str) -> tuple[str, str, Dict[str, str], Dict[str, str]]:
+        if direction == "DESTINO -> ORIGEN":
+            return "DESTINO", "ORIGEN", DB_DESTINO_CONFIG, DB_ORIGEN_CONFIG
+        return "ORIGEN", "DESTINO", DB_ORIGEN_CONFIG, DB_DESTINO_CONFIG
+
+    def _poll_results(self) -> None:
+        while True:
+            try:
+                result_type, payload = self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if result_type == "result":
+                result, txt_path, pdf_path = payload
+                self.result = result
+                self._show_lines(table_comparison_lines(result))
+                self.dashboard.generated_files["table_comparison_txt"] = txt_path
+                self.dashboard.generated_files["table_comparison_pdf"] = pdf_path
+                self.dashboard.generated_files["latest_pdf"] = pdf_path
+                self.dashboard._log(
+                    f"Comparacion de tabla completada. TXT: {txt_path}. PDF: {pdf_path}"
+                )
+                self.dashboard._summary(
+                    "Tabla: igual" if result.table_equal else "Tabla: diferente"
+                )
+                self._set_busy(False, f"Reporte generado: {pdf_path}")
+                self.view_source_schema_button.configure(state="normal")
+                self.view_target_schema_button.configure(state="normal")
+                self.sync_schema_button.configure(
+                    state="normal" if not result.structure_equal else "disabled"
+                )
+                self.sync_data_button.configure(
+                    state="normal" if result.data_compared and not result.data_equal else "disabled"
+                )
+            elif result_type == "error":
+                self._set_busy(False, "No se pudo completar la comparacion.")
+                messagebox.showerror("Comparacion no completada", payload, parent=self)
+            elif result_type == "sync":
+                sync_result, txt_path, pdf_path = payload
+                key = sync_result.sync_type.lower()
+                self.dashboard.generated_files[f"table_sync_{key}_txt"] = txt_path
+                self.dashboard.generated_files[f"table_sync_{key}_pdf"] = pdf_path
+                self.dashboard.generated_files["latest_pdf"] = pdf_path
+                self.dashboard._log(
+                    f"Igualacion {sync_result.sync_type} completada. TXT: {txt_path}. PDF: {pdf_path}"
+                )
+                self.dashboard._summary(
+                    f"Igualacion {sync_result.sync_type}: {sync_result.status}"
+                )
+                self._set_busy(False, f"Reporte generado: {pdf_path}")
+                self.compare()
+            elif result_type == "sync_error":
+                sync_result, txt_path, pdf_path = payload
+                key = sync_result.sync_type.lower()
+                self.dashboard.generated_files[f"table_sync_{key}_txt"] = txt_path
+                self.dashboard.generated_files[f"table_sync_{key}_pdf"] = pdf_path
+                self.dashboard.generated_files["latest_pdf"] = pdf_path
+                self.dashboard._log(
+                    f"Igualacion {sync_result.sync_type} no completada. TXT: {txt_path}. PDF: {pdf_path}"
+                )
+                self.dashboard._summary(
+                    f"Igualacion {sync_result.sync_type}: ERROR"
+                )
+                self._set_busy(False, f"No se completo. Reporte generado: {pdf_path}")
+                messagebox.showerror(
+                    "Igualacion no completada",
+                    f"{sync_result.detail}\n\nReporte PDF:\n{pdf_path}",
+                    parent=self,
+                )
+
+        if self.winfo_exists():
+            self.after(100, self._poll_results)
+
+    def _show_lines(self, lines: List[str]) -> None:
+        self.report_text.configure(state="normal")
+        self.report_text.delete("1.0", "end")
+        self.report_text.insert("1.0", "\n".join(lines))
+        self.report_text.configure(state="disabled")
+
+    def view_source_schema(self) -> None:
+        if self.result is None:
+            return
+        SQLViewerDialog(
+            self,
+            initial_content=self.result.source_schema_sql,
+            title=f"Schema SQL {self.result.source_name}",
+        )
+
+    def view_target_schema(self) -> None:
+        if self.result is None:
+            return
+        SQLViewerDialog(
+            self,
+            initial_content=self.result.target_schema_sql,
+            title=f"Schema SQL {self.result.target_name}",
+        )
+
+    def _set_busy(self, busy: bool, status: str) -> None:
+        self.status_var.set(status)
+        state = "disabled" if busy else "normal"
+        self.compare_button.configure(state=state)
+        self.close_button.configure(state=state)
+        self.table_entry.configure(state=state)
+        self.direction_combo.configure(state="disabled" if busy else "readonly")
+        if busy:
+            self.view_source_schema_button.configure(state="disabled")
+            self.view_target_schema_button.configure(state="disabled")
+            self.sync_schema_button.configure(state="disabled")
+            self.sync_data_button.configure(state="disabled")
+
+    def _close(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo(
+                "Operacion en curso",
+                "Espera a que termine la comparacion.",
+                parent=self,
+            )
+            return
+        self.grab_release()
+        self.destroy()
 
 
 class DataDeletionDialog(tk.Toplevel):
@@ -1253,6 +1731,293 @@ class DataDeletionDialog(tk.Toplevel):
         self.table_entry.configure(state=state)
         if busy:
             self.delete_button.configure(state="disabled")
+
+    def _close(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo(
+                "Operacion en curso",
+                "Espera a que termine la operacion actual.",
+                parent=self,
+            )
+            return
+        self.grab_release()
+        self.destroy()
+
+
+class DropTablesDialog(tk.Toplevel):
+    """Dialogo para eliminar una tabla y sus tablas dependientes."""
+
+    CONNECTIONS = {
+        "BD ORIGEN": DB_ORIGEN_CONFIG,
+        "BD DESTINO": DB_DESTINO_CONFIG,
+    }
+
+    def __init__(self, dashboard: SchemaComparatorDashboard) -> None:
+        super().__init__(dashboard)
+        self.dashboard = dashboard
+        self.colors = dashboard.theme_colors
+        self.title("Eliminar tablas relacionadas")
+        self.geometry("800x610")
+        self.minsize(700, 520)
+        self.transient(dashboard)
+        self.grab_set()
+        self.configure(bg=self.colors["bg"])
+
+        self.result_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self.worker: threading.Thread | None = None
+        self.plan: DropTablesPlan | None = None
+        self.plan_connection_name = ""
+
+        self.connection_var = tk.StringVar(value="BD DESTINO")
+        self.table_var = tk.StringVar()
+        self.status_var = tk.StringVar(
+            value="Selecciona una conexion, escribe la tabla y genera el informe previo."
+        )
+
+        self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.after(100, self._poll_results)
+        self.table_entry.focus_set()
+
+    def _build_ui(self) -> None:
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+        form = ttk.LabelFrame(
+            self,
+            text="Tabla a eliminar",
+            padding=14,
+            style="Dialog.TLabelframe",
+        )
+        form.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        form.columnconfigure(1, weight=1)
+
+        ttk.Label(form, text="Base de datos:", style="DialogPanel.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 10)
+        )
+        self.connection_combo = ttk.Combobox(
+            form,
+            textvariable=self.connection_var,
+            values=list(self.CONNECTIONS),
+            state="readonly",
+            style="Dialog.TCombobox",
+        )
+        self.connection_combo.grid(row=0, column=1, sticky="ew")
+
+        ttk.Label(form, text="Nombre de tabla:", style="DialogPanel.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=(10, 0)
+        )
+        self.table_entry = ttk.Entry(
+            form,
+            textvariable=self.table_var,
+            style="Dialog.TEntry",
+        )
+        self.table_entry.grid(row=1, column=1, sticky="ew", pady=(10, 0))
+        self.table_entry.bind("<Return>", lambda _event: self.analyze())
+
+        actions = ttk.Frame(self, padding=(16, 4), style="Dialog.TFrame")
+        actions.grid(row=1, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+        actions.columnconfigure(2, weight=1)
+
+        self.analyze_button = ttk.Button(
+            actions,
+            text="Generar informe previo",
+            command=self.analyze,
+            style="DialogPrimary.TButton",
+        )
+        self.analyze_button.grid(row=0, column=0, sticky="ew", padx=4)
+        self.drop_button = ttk.Button(
+            actions,
+            text="Confirmar y eliminar",
+            command=self.confirm_drop,
+            state="disabled",
+            style="DialogPrimary.TButton",
+        )
+        self.drop_button.grid(row=0, column=1, sticky="ew", padx=4)
+        self.close_button = ttk.Button(
+            actions,
+            text="Cerrar",
+            command=self._close,
+            style="DialogSecondary.TButton",
+        )
+        self.close_button.grid(row=0, column=2, sticky="ew", padx=4)
+
+        report_frame = ttk.LabelFrame(
+            self,
+            text="Informe",
+            padding=10,
+            style="Dialog.TLabelframe",
+        )
+        report_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=8)
+        report_frame.columnconfigure(0, weight=1)
+        report_frame.rowconfigure(0, weight=1)
+
+        self.report_text = tk.Text(
+            report_frame,
+            wrap="word",
+            state="disabled",
+            font=("Consolas", 10),
+            padx=10,
+            pady=10,
+            bg=self.colors["field"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            selectbackground=self.colors["accent"],
+            selectforeground="#ffffff",
+            relief="flat",
+        )
+        self.report_text.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(
+            report_frame,
+            orient="vertical",
+            command=self.report_text.yview,
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.report_text.configure(yscrollcommand=scrollbar.set)
+
+        ttk.Label(
+            self,
+            textvariable=self.status_var,
+            style="Dialog.TLabel",
+        ).grid(row=3, column=0, sticky="w", padx=20, pady=(0, 14))
+
+    def analyze(self) -> None:
+        table_name = self.table_var.get().strip()
+        if not table_name:
+            messagebox.showwarning("Falta la tabla", "Escribe el nombre de la tabla.", parent=self)
+            return
+
+        connection_name = self.connection_var.get()
+        config = dict(self.CONNECTIONS[connection_name])
+        self.plan = None
+        self.plan_connection_name = ""
+        self._set_busy(True, "Analizando dependencias antes de eliminar tablas...")
+        self.worker = threading.Thread(
+            target=self._analyze_worker,
+            args=(connection_name, config, table_name),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def confirm_drop(self) -> None:
+        if self.plan is None:
+            return
+
+        confirmed = messagebox.askyesno(
+            "Confirmar eliminacion irreversible",
+            (
+                f"Se eliminaran {len(self.plan.drop_order)} tabla(s) completas "
+                f"con {self.plan.total_rows} fila(s) contabilizadas.\n\n"
+                "Esta operacion elimina estructura y datos. "
+                "No se puede deshacer despues del commit.\n\n"
+                "Deseas continuar?"
+            ),
+            icon="warning",
+            parent=self,
+        )
+        if not confirmed:
+            return
+
+        config = dict(self.CONNECTIONS[self.plan_connection_name])
+        self._set_busy(True, "Eliminando tablas relacionadas...")
+        self.worker = threading.Thread(
+            target=self._drop_worker,
+            args=(self.plan_connection_name, config, self.plan),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def _analyze_worker(
+        self,
+        connection_name: str,
+        config: Dict[str, str],
+        table_name: str,
+    ) -> None:
+        dropper = RelatedTablesDropper(DatabaseConnection(config))
+        try:
+            plan = dropper.build_plan(table_name)
+            self.result_queue.put(("plan", (connection_name, plan)))
+        except Exception as error:
+            self.result_queue.put(("error", str(error)))
+        finally:
+            dropper.close()
+
+    def _drop_worker(
+        self,
+        connection_name: str,
+        config: Dict[str, str],
+        plan: DropTablesPlan,
+    ) -> None:
+        dropper = RelatedTablesDropper(DatabaseConnection(config))
+        try:
+            dropped_tables = dropper.execute(plan)
+            txt_path, pdf_path = write_drop_tables_report(
+                plan,
+                dropped_tables,
+                connection_name,
+            )
+            self.result_queue.put(("dropped", (dropped_tables, txt_path, pdf_path)))
+        except Exception as error:
+            self.result_queue.put(("error", f"La eliminacion fue revertida. Detalle: {error}"))
+        finally:
+            dropper.close()
+
+    def _poll_results(self) -> None:
+        while True:
+            try:
+                result_type, payload = self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if result_type == "plan":
+                connection_name, plan = payload
+                self.plan = plan
+                self.plan_connection_name = connection_name
+                self._show_lines(drop_tables_plan_lines(plan, connection_name))
+                self._set_busy(False, "Informe previo listo. Revisa el detalle antes de eliminar.")
+                self.drop_button.configure(state="normal")
+            elif result_type == "dropped":
+                dropped_tables, txt_path, pdf_path = payload
+                self.dashboard.generated_files["drop_tables_txt"] = txt_path
+                self.dashboard.generated_files["drop_tables_pdf"] = pdf_path
+                self.dashboard.generated_files["latest_pdf"] = pdf_path
+                self.dashboard._log(
+                    f"Eliminacion completada: {len(dropped_tables)} tabla(s). PDF: {pdf_path}"
+                )
+                self.dashboard._summary(f"Tablas eliminadas: {len(dropped_tables)}")
+                self._set_busy(False, f"Eliminacion completada. PDF generado: {pdf_path}")
+                self.analyze_button.configure(state="disabled")
+                self.drop_button.configure(state="disabled")
+                messagebox.showinfo(
+                    "Eliminacion completada",
+                    f"Se eliminaron {len(dropped_tables)} tabla(s).\n\nReporte PDF:\n{pdf_path}",
+                    parent=self,
+                )
+            elif result_type == "error":
+                self._set_busy(False, "No se pudo completar la operacion.")
+                self.drop_button.configure(state="disabled")
+                messagebox.showerror("Operacion no completada", payload, parent=self)
+
+        if self.winfo_exists():
+            self.after(100, self._poll_results)
+
+    def _show_lines(self, lines: List[str]) -> None:
+        self.report_text.configure(state="normal")
+        self.report_text.delete("1.0", "end")
+        self.report_text.insert("1.0", "\n".join(lines))
+        self.report_text.configure(state="disabled")
+
+    def _set_busy(self, busy: bool, status: str) -> None:
+        self.status_var.set(status)
+        state = "disabled" if busy else "normal"
+        self.analyze_button.configure(state=state)
+        self.close_button.configure(state=state)
+        self.connection_combo.configure(state="disabled" if busy else "readonly")
+        self.table_entry.configure(state=state)
+        if busy:
+            self.drop_button.configure(state="disabled")
 
     def _close(self) -> None:
         if self.worker and self.worker.is_alive():
